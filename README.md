@@ -28,7 +28,7 @@ This repository contains the available extension catalogues for the [Anikku](htt
 * Otherwise, copy & paste the following URL:
 
 ```html
-https://raw.githubusercontent.com/yuzono/anime-repo/repo/index.min.json
+https://raw.githubusercontent.com/SoloFFCreator/anime-repo/repo/index.min.json
 ```
 
 ### Manual downloads
