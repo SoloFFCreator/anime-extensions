@@ -13,11 +13,13 @@ import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import uy.kohesive.injekt.injectLazy
+import android.util.Base64
 
 class AnimeWorldIndia(
     final override val lang: String,
@@ -27,7 +29,7 @@ class AnimeWorldIndia(
 
     override val name = "AnimeWorld India"
 
-    override val baseUrl = "https://anime-world.co"
+    override val baseUrl = "https://watchanimeworld.net"
 
     override val supportsLatest = true
 
@@ -36,138 +38,73 @@ class AnimeWorldIndia(
     private val preferences by getPreferencesLazy()
 
     // ============================== Popular ===============================
-    override fun popularAnimeRequest(page: Int) = GET("$baseUrl/advanced-search/page/$page/?s_lang=$lang&s_orderby=viewed")
+    override fun popularAnimeRequest(page: Int) = GET("$baseUrl/series/page/$page/")
 
-    override fun popularAnimeSelector() = searchAnimeSelector()
+    override fun popularAnimeSelector() = "div.aa-cn, article.post"
 
-    override fun popularAnimeFromElement(element: Element) = searchAnimeFromElement(element)
+    override fun popularAnimeFromElement(element: Element) = SAnime.create().apply {
+        setUrlWithoutDomain(element.selectFirst("a")!!.attr("href"))
+        thumbnail_url = element.selectFirst("img")?.attr("abs:src") ?: element.selectFirst("img")?.attr("abs:data-src")
+        title = element.selectFirst("h2")?.text() ?: element.selectFirst("h3")?.text() ?: ""
+    }
 
-    override fun popularAnimeNextPageSelector() = searchAnimeNextPageSelector()
+    override fun popularAnimeNextPageSelector() = "a.next, ul.page-numbers li:has(span.current) + li a"
 
     // =============================== Latest ===============================
-    override fun latestUpdatesNextPageSelector() = searchAnimeNextPageSelector()
+    override fun latestUpdatesNextPageSelector() = popularAnimeNextPageSelector()
 
-    override fun latestUpdatesSelector() = searchAnimeSelector()
+    override fun latestUpdatesSelector() = popularAnimeSelector()
 
-    override fun latestUpdatesFromElement(element: Element) = searchAnimeFromElement(element)
+    override fun latestUpdatesFromElement(element: Element) = popularAnimeFromElement(element)
 
-    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/advanced-search/page/$page/?s_lang=$lang&s_orderby=update")
+    override fun latestUpdatesRequest(page: Int) = GET("$baseUrl/series/page/$page/")
 
     // =============================== Search ===============================
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
-        val searchParams = AnimeWorldIndiaFilters().getSearchParams(filters)
-        return GET("$baseUrl/advanced-search/page/$page/?s_keyword=$query&s_lang=$lang$searchParams")
+        return if (query.isNotBlank()) {
+            GET("$baseUrl/page/$page/?s=$query")
+        } else {
+            val searchParams = AnimeWorldIndiaFilters().getSearchParams(filters)
+            GET("$baseUrl/series/page/$page/$searchParams")
+        }
     }
 
-    override fun searchAnimeSelector() = "div.col-span-1"
+    override fun searchAnimeSelector() = popularAnimeSelector()
 
-    override fun searchAnimeFromElement(element: Element) = SAnime.create().apply {
-        setUrlWithoutDomain(element.selectFirst("a")!!.attr("href"))
-        thumbnail_url = element.selectFirst("img")!!.attr("abs:src")
-        title = element.selectFirst("div.font-medium.line-clamp-2.mb-3")!!.text()
-    }
+    override fun searchAnimeFromElement(element: Element) = popularAnimeFromElement(element)
 
-    override fun searchAnimeNextPageSelector() = "ul.page-numbers li:has(span.current) + li"
+    override fun searchAnimeNextPageSelector() = popularAnimeNextPageSelector()
 
     override fun getFilterList() = AnimeWorldIndiaFilters().filters
 
     // =========================== Anime Details ============================
     override fun animeDetailsParse(document: Document) = SAnime.create().apply {
-        title = document.selectFirst("h2.text-4xl")!!.text()
-        genre = document.select("span.leading-6 a[class~=border-opacity-30]").joinToString { it.text() }
-        description = document.selectFirst("div[data-synopsis]")?.text()
-        author = document.selectFirst("span.leading-6 a[href*=\"producer\"]:first-child")?.text()
-        artist = document.selectFirst("span.leading-6 a[href*=\"studio\"]:first-child")?.text()
-        status = parseStatus(document)
-    }
-
-    private val selector = "ul li:has(div.w-1.h-1.bg-gray-500.rounded-full) + li"
-
-    private fun parseStatus(document: Document): Int {
-        return when (document.selectFirst("$selector a:not(:contains(Ep))")?.text()) {
-            null -> SAnime.UNKNOWN
-
-            "Movie" -> SAnime.COMPLETED
-
-            else -> {
-                val epParts = document.selectFirst("$selector a:not(:contains(TV))")
-                    ?.text()
-                    ?.drop(3)
-                    ?.split("/")
-                    ?.takeIf { it.size >= 2 }
-                    ?: return SAnime.UNKNOWN
-                if (epParts.first().trim().compareTo(epParts[1].trim()) == 0) {
-                    SAnime.COMPLETED
-                } else {
-                    SAnime.ONGOING
-                }
-            }
-        }
+        title = document.selectFirst("h1.entry-title")?.text() ?: document.selectFirst("h1")?.text() ?: ""
+        genre = document.select("a[href*='/genre/']").joinToString { it.text() }
+        description = document.selectFirst("div.entry-content p")?.text() ?: document.selectFirst("div.description")?.text()
+        status = SAnime.UNKNOWN
     }
 
     // ============================== Episodes ==============================
-    override fun episodeListSelector() = throw UnsupportedOperationException()
+    override fun episodeListSelector() = "ul.episodios li, div.episodios-list a, article.episodes"
 
-    override fun episodeFromElement(element: Element): SEpisode = throw UnsupportedOperationException()
-
-    @Serializable
-    data class SeasonDto(val episodes: EpisodeTypeDto)
-
-    @Serializable
-    data class EpisodeTypeDto(val all: List<EpisodeDto>) {
-        @Serializable
-        data class EpisodeDto(val id: Int, val metadata: MetadataDto)
-
-        @Serializable
-        data class MetadataDto(
-            val number: String,
-            val title: String,
-            val released: String? = null,
-        )
+    override fun episodeFromElement(element: Element): SEpisode = SEpisode.create().apply {
+        val link = if (element.tagName() == "a") element else element.selectFirst("a")!!
+        setUrlWithoutDomain(link.attr("href"))
+        val epText = element.selectFirst("div.episodiotitle")?.text() ?: link.text()
+        name = if (epText.isBlank()) {
+            val href = link.attr("href")
+            "Episode " + href.substringBeforeLast("/").substringAfterLast("-")
+        } else {
+            epText
+        }
+        episode_number = name.substringAfter("Episode ").substringBefore(" ").toFloatOrNull() ?: 1f
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         val document = response.asJsoup()
-        val isMovie = document.selectFirst("nav li > a[href*=\"type/movies/\"]") != null
-
-        val seasonsJson = json.decodeFromString<List<SeasonDto>>(
-            document.html()
-                .substringAfter("var season_list = ")
-                .substringBefore("var season_label =")
-                .trim().dropLast(1),
-        )
-
-        var episodeNumberFallback = 1F
-        val isSingleSeason = seasonsJson.size == 1
-        return seasonsJson.flatMapIndexed { seasonNumber, season ->
-            val seasonName = if (isSingleSeason) "" else "Season ${seasonNumber + 1}"
-
-            season.episodes.all.reversed().map { episode ->
-                val episodeTitle = episode.metadata.title
-                val epNum = episode.metadata.number.toIntOrNull() ?: episodeNumberFallback.toInt()
-
-                val episodeName = when {
-                    isMovie -> "Movie"
-
-                    else -> buildString {
-                        if (seasonName.isNotBlank()) append("$seasonName - ")
-                        append("Episode $epNum")
-                        if (episodeTitle.isNotBlank()) append(" - $episodeTitle")
-                    }
-                }
-
-                SEpisode.create().apply {
-                    name = episodeName
-                    episode_number = when {
-                        isSingleSeason -> epNum.toFloat()
-                        else -> episodeNumberFallback
-                    }
-                    episodeNumberFallback++
-                    setUrlWithoutDomain("$baseUrl/wp-json/kiranime/v1/episode?id=${episode.id}")
-                    date_upload = episode.metadata.released?.toLongOrNull()?.times(1000) ?: 0L
-                }
-            }
-        }.sortedByDescending { it.episode_number }
+        val episodes = document.select(episodeListSelector()).map { episodeFromElement(it) }
+        return episodes.reversed()
     }
 
     // ============================ Video Links =============================
@@ -175,37 +112,48 @@ class AnimeWorldIndia(
 
     override fun videoUrlParse(document: Document) = throw UnsupportedOperationException()
 
-    override fun videoListSelector() = throw UnsupportedOperationException()
+    override fun videoListSelector() = "iframe"
 
     @Serializable
-    private data class PlayerDto(
-        val type: String,
-        val url: String,
+    data class PlayerData(
         val language: String,
-        val server: String,
+        val link: String,
     )
 
-    private val mystreamExtractor by lazy { MyStreamExtractor(client, headers) }
-
     override fun videoListParse(response: Response): List<Video> {
-        val body = response.body.string()
-        val documentTrimmed = body
-            .substringAfterLast("\"players\":")
-            .substringBefore(",\"noplayer\":")
-            .trim()
-
-        val playersList = json.decodeFromString<List<PlayerDto>>(documentTrimmed)
-            .filter { it.type == "stream" && it.url.isNotBlank() }
-            .also { require(it.isNotEmpty()) { "No streams available!" } }
-            .filter { language.isEmpty() || it.language.equals(language) }
-            .also { require(it.isNotEmpty()) { "No videos for your language!" } }
-
-        return playersList.flatMap {
-            when (it.server) {
-                "Mystream" -> mystreamExtractor.videosFromUrl(it.url, it.language)
-                else -> emptyList()
+        val document = response.asJsoup()
+        val videos = mutableListOf<Video>()
+        
+        document.select("iframe").forEach { iframe ->
+            val src = iframe.attr("abs:src")
+            val dataSrc = iframe.attr("abs:data-src")
+            
+            val url = if (src.isNotBlank() && !src.contains("about:blank")) src else dataSrc
+            
+            if (url.contains("zephyrflick.top")) {
+                videos.add(Video(url, "ZephyrFlick", url))
+            } else if (url.contains("player1.php?data=")) {
+                val data = url.toHttpUrl().queryParameter("data")
+                if (data != null) {
+                    try {
+                        val decoded = String(Base64.decode(data, Base64.DEFAULT))
+                        val players = json.decodeFromString<List<PlayerData>>(decoded)
+                        players.forEach { player ->
+                            if (player.link.contains("short.icu")) {
+                                val abyssUrl = player.link.replace("short.icu", "abyss.to")
+                                videos.add(Video(abyssUrl, "Abyss [${player.language}]", abyssUrl))
+                            } else {
+                                videos.add(Video(player.link, player.language, player.link))
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // Ignore decoding errors
+                    }
+                }
             }
         }
+        
+        return videos
     }
 
     override fun List<Video>.sort(): List<Video> {
